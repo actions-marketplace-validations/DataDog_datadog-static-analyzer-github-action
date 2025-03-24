@@ -51,8 +51,7 @@ inputs:
     default: "true"
 runs:
   using: "docker"
-  image: "docker://ghcr.io/datadog/datadog-static-analyzer:latest"
-  entrypoint: "github-action.sh"
+  image: "Dockerfile"
   env:
     DD_API_KEY: ${{ inputs.dd_api_key }}
     DD_APP_KEY: ${{ inputs.dd_app_key }}
