@@ -5,4 +5,3 @@ FROM ghcr.io/datadog/datadog-static-analyzer:latest
 RUN npm install -g @datadog/datadog-ci@^4 && npm list -g @datadog/datadog-ci
 
 ENTRYPOINT ["github-action.sh"]
-ß
