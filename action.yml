@@ -44,23 +44,200 @@ inputs:
   architecture:
     description: "The architecture of the image to use. Can be x86_64 or aarch64."
     required: false
-    default: "x86_64"
+    default: ""
+    deprecationMessage: "This input is deprecated and non-functional. The runner's architecture is automatically detected"
   diff_aware:
     description: "Enable diff aware scanning mode."
     required: false
     default: "true"
 runs:
-  using: "docker"
-  image: "Dockerfile"
-  env:
-    DD_API_KEY: ${{ inputs.dd_api_key }}
-    DD_APP_KEY: ${{ inputs.dd_app_key }}
-    DD_SITE: ${{ inputs.dd_site }}
-    CPU_COUNT: ${{ inputs.cpu_count }}
-    ENABLE_PERFORMANCE_STATISTICS: ${{ inputs.enable_performance_statistics }}
-    ENABLE_DEBUG: ${{ inputs.debug }}
-    SUBDIRECTORY: ${{ inputs.subdirectory }}
-    ARCHITECTURE: ${{ inputs.architecture }}
-    DIFF_AWARE: ${{ inputs.diff_aware }}
-    SECRETS_ENABLED: ${{ inputs.secrets_enabled }}
-    STATIC_ANALYSIS_ENABLED: ${{ inputs.static_analysis_enabled }}
+  using: "composite"
+  steps:
+    - name: Set up environment
+      shell: bash
+      run: |
+        case "${{ runner.arch }}" in
+          X64)
+            DDSA_ARCH="x86_64"
+            DDCI_ARCH="x64"
+            ;;
+          ARM64)
+            DDSA_ARCH="aarch64"
+            DDCI_ARCH="arm64"
+            ;;
+          *)
+            echo "::error title=Unsupported architecture::this action does not support ${{ runner.arch }}"
+            exit 1
+            ;;
+        esac
+        echo "DDSA_ARCH=$DDSA_ARCH" >> "$GITHUB_ENV"
+        echo "DDCI_ARCH=$DDCI_ARCH" >> "$GITHUB_ENV"
+
+        if [ "${{ runner.os }}" = "macOS" ]; then
+          DDSA_OS="apple-darwin"
+          DDCI_OS="darwin"
+        elif [ "${{ runner.os }}" = "Windows" ] && [ "$DDSA_ARCH" = "x86_64" ]; then
+          DDSA_OS="pc-windows-msvc"
+          DDCI_OS="win"
+        elif [ "${{ runner.os }}" = "Linux" ]; then
+          DDSA_OS="unknown-linux-gnu"
+          DDCI_OS="linux"
+        else
+          echo "::error title=Unsupported platform::this action does not support ${{ runner.os }}/${{ runner.arch }}"
+          exit 1
+        fi
+        echo "DDSA_OS=$DDSA_OS" >> "$GITHUB_ENV"
+        echo "DDCI_OS=$DDCI_OS" >> "$GITHUB_ENV"
+
+        if [ -z "${{ inputs.dd_api_key }}" ]; then
+          echo "::error title=Missing credentials::dd_api_key must be set"
+          exit 1
+        fi
+        echo "DD_API_KEY=${{ inputs.dd_api_key }}" >> "$GITHUB_ENV"
+
+        if [ -z "${{ inputs.dd_app_key }}" ]; then
+          echo "::error title=Missing credentials::dd_app_key must be set"
+          exit 1
+        fi
+        echo "DD_APP_KEY=${{ inputs.dd_app_key }}" >> "$GITHUB_ENV"
+
+        echo "DD_SITE=${{ inputs.dd_site }}" >> "$GITHUB_ENV"
+
+        mkdir -p "$HOME/.local/bin"
+        echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+        
+        git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
+    - name: Install datadog-static-analyzer
+      shell: bash
+      run: |
+        filename="datadog-static-analyzer-$DDSA_ARCH-$DDSA_OS.zip"
+
+        TIMEFORMAT='Installed datadog-static-analyzer in %1Rs'
+        time {
+          tmpdir="$(mktemp -d)"
+          curl -fsSL --retry 5 "https://github.com/DataDog/datadog-static-analyzer/releases/latest/download/$filename" -o "$tmpdir/$filename"
+          unzip -q "$tmpdir/$filename" -d "$HOME/.local/bin"
+          chmod +x "$HOME/.local/bin/datadog-static-analyzer"
+        }
+
+    - name: Install datadog-ci
+      shell: bash
+      run: |
+        DDCI_VERSION="^4"
+
+        TIMEFORMAT='Installed datadog-ci in %1Rs'
+        time {
+          resolved_version="$(
+            export SEMVER_PATH="$(npm ls -g semver --parseable --depth=1 | head -n1)"
+            npm view "@datadog/datadog-ci@${DDCI_VERSION}" version --json 2>/dev/null | node -p "
+              const semver = require(process.env.SEMVER_PATH);
+              const fs = require('fs');
+              const res = JSON.parse(fs.readFileSync(0, 'utf-8'));
+              const versions = Array.isArray(res) ? res : [res];
+              semver.maxSatisfying(versions, '${DDCI_VERSION}') ?? '';
+            "
+          )" || resolved_version=""
+
+          if [ -n "$resolved_version" ] && (
+            echo "Fetching datadog-ci $resolved_version release"
+            filename="datadog-ci_$DDCI_OS-$DDCI_ARCH"
+            url="https://github.com/DataDog/datadog-ci/releases/download/v$resolved_version/$filename"
+            curl -fsSL --retry 5 "$url" -o "$HOME/.local/bin/datadog-ci"
+            chmod +x "$HOME/.local/bin/datadog-ci"
+            datadog-ci --version
+          ); then
+            echo "Using datadog-ci $resolved_version binary"
+          else
+            echo "Falling back to npm install"
+            NPM_PREFIX="$(mktemp -d)"
+            npm install --prefix "$NPM_PREFIX" "@datadog/datadog-ci@$DDCI_VERSION" \
+              --no-audit --no-fund --progress=false --loglevel=error
+
+            BIN_DIR="$NPM_PREFIX/node_modules/.bin"
+            echo "$BIN_DIR" >> "$GITHUB_PATH"
+            v="$("$BIN_DIR/datadog-ci" --version)"
+            echo "Using datadog-ci $v"
+          fi
+        }
+
+    - name: Upload git metadata to Datadog
+      if: ${{ inputs.diff_aware == 'true' }}
+      shell: bash
+      run: |
+        cd "$GITHUB_WORKSPACE"
+        git config --unset extensions.worktreeConfig || true
+        echo "Uploading git metadata to Datadog"
+        datadog-ci git-metadata upload
+        echo "Done"
+
+    - name: Run static analysis
+      shell: bash
+      run: |
+        cd "$GITHUB_WORKSPACE"
+        tmpdir="$(mktemp -d)"
+        OUTPUT_FILE="$tmpdir/output.sarif"
+
+        if [ "${{ inputs.enable_performance_statistics }}" = "true" ]; then
+          ENABLE_PERFORMANCE_STATISTICS="--performance-statistics"
+        else
+          ENABLE_PERFORMANCE_STATISTICS=""
+        fi
+
+        if [ "${{ inputs.debug }}" = "yes" ]; then
+          DEBUG_ARGUMENT_VALUE="yes"
+        else
+          DEBUG_ARGUMENT_VALUE="no"
+        fi
+
+        SUBDIRECTORY="${{ inputs.subdirectory }}"
+        if [ -n "$SUBDIRECTORY" ]; then
+          for subdirectory in $SUBDIRECTORY; do
+            SUBDIRECTORY_OPTION="$SUBDIRECTORY_OPTION --subdirectory $subdirectory"
+          done
+        fi
+
+        if [ "${{ inputs.diff_aware }}" = "true" ]; then
+          DIFF_AWARE_VALUE="--diff-aware"
+        else
+          DIFF_AWARE_VALUE=""
+        fi
+
+        if [ "${{ inputs.secrets_enabled }}" = "true" ]; then
+          SECRETS_ENABLED_VALUE="--enable-secrets true"
+        else
+          SECRETS_ENABLED_VALUE=""
+        fi
+
+        if [ "${{ inputs.static_analysis_enabled }}" = "false" ]; then
+          STATIC_ANALYSIS_ENABLED_VALUE="--enable-static-analysis false"
+        else
+          STATIC_ANALYSIS_ENABLED_VALUE="--enable-static-analysis true"
+        fi
+
+        CPU_COUNT="${{ inputs.cpu_count }}"
+
+        echo "Starting Static Analysis"
+        datadog-static-analyzer \
+          -i "$GITHUB_WORKSPACE" \
+          -g \
+          -o "$OUTPUT_FILE" \
+          -f sarif \
+          --cpus "$CPU_COUNT" \
+          "$ENABLE_PERFORMANCE_STATISTICS" \
+          --debug $DEBUG_ARGUMENT_VALUE \
+          $SUBDIRECTORY_OPTION \
+          $DIFF_AWARE_VALUE \
+          $SECRETS_ENABLED_VALUE \
+          $STATIC_ANALYSIS_ENABLED_VALUE
+        echo "Done"
+
+        echo "OUTPUT_FILE=$OUTPUT_FILE" >> "$GITHUB_ENV"
+
+    - name: Upload analysis results to Datadog
+      shell: bash
+      run: |
+        cd "$GITHUB_WORKSPACE"
+        echo "Uploading analysis results to Datadog"
+        datadog-ci sarif upload "$OUTPUT_FILE" --service datadog-static-analyzer --env ci
+        echo "Done"
