@@ -1,0 +1,67 @@
+name: Test Platforms
+
+on: [push]
+
+jobs:
+  test-platforms:
+    name: Test on ${{ matrix.target }} ${{ matrix.test_npm_fallback && '(npm install fallback)' || '(direct download)' }}
+    runs-on: ${{ matrix.target }}
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - ubuntu-latest
+          - ubuntu-24.04-arm
+          - macos-latest
+          - windows-latest
+        test_npm_fallback: [true, false]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Add a commit
+        shell: bash
+        run: |
+          git config --global user.name "User"
+          git config --global user.email "user@example.com"
+          # (A dummy commit is added so a new commit hash is always uploaded to Datadog)
+          git commit -m "Commit" --allow-empty
+
+      - name: Set up direct download test
+        if: matrix.test_npm_fallback == false
+        shell: bash
+        run: |
+          test_hook='TEST_HOOK_DIRECT_DOWNLOAD=""'
+
+          if ! grep -q "$test_hook" action.yml; then
+            echo "::error::Test setup broken: unable to find hook"
+            exit 1
+          fi
+
+          sed -i.bak "s/$test_hook/echo 'Test invariant broken: should have used direct download'; exit 1/" action.yml
+          rm -f action.yml.bak
+
+      - name: Set up NPM install fallback test
+        if: matrix.test_npm_fallback == true
+        shell: bash
+        run: |
+          test_hook='TEST_HOOK_FORCE_NPM_INSTALL=""'
+
+          if ! grep -q "$test_hook" action.yml; then
+            echo "::error::Test setup broken: unable to find hook"
+            exit 1
+          fi
+
+          sed -i.bak "s/$test_hook/echo 'Simulating cURL error...'; exit 1/" action.yml
+          rm -f action.yml.bak
+
+      - name: Run action
+        uses: ./
+        with:
+          dd_api_key: ${{ secrets.DD_API_KEY }}
+          dd_app_key: ${{ secrets.DD_APP_KEY }}
+          dd_site: ${{ vars.DD_SITE }}
+          diff_aware: true

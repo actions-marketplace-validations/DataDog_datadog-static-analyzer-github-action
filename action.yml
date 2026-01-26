@@ -141,6 +141,7 @@ runs:
 
           if [ -n "$resolved_version" ] && (
             echo "Fetching datadog-ci $resolved_version release"
+            TEST_HOOK_FORCE_NPM_INSTALL="" # (Test hook to simulate an error)
             filename="datadog-ci_$DDCI_OS-$DDCI_ARCH"
             url="https://github.com/DataDog/datadog-ci/releases/download/v$resolved_version/$filename"
             curl -fsSL --retry 5 "$url" -o "$HOME/.local/bin/datadog-ci"
@@ -149,6 +150,7 @@ runs:
           ); then
             echo "Using datadog-ci $resolved_version binary"
           else
+            TEST_HOOK_DIRECT_DOWNLOAD="" # (Test hook)
             echo "Falling back to npm install"
             NPM_PREFIX="$(mktemp -d)"
             npm install --prefix "$NPM_PREFIX" "@datadog/datadog-ci@$DDCI_VERSION" \
