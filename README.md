@@ -20,10 +20,10 @@ jobs:
     name: Datadog Static Analyzer
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
       - name: Check code meets quality standards
         id: datadog-static-analysis
-        uses: DataDog/datadog-static-analyzer-github-action@v1
+        uses: DataDog/datadog-static-analyzer-github-action@v3
         with:
           dd_app_key: ${{ secrets.DD_APP_KEY }}
           dd_api_key: ${{ secrets.DD_API_KEY }}
@@ -49,7 +49,6 @@ You can set the following parameters for Static Analysis.
 | `enable_performance_statistics` | Get the execution time statistics for analyzed files.                                                                                                   | No      | `false`         |
 | `debug`                         | Lets the analyzer print additional logs useful for debugging. To enable, set to `yes`.                                                                  | No      | `no`            |
 | `subdirectory`                  | A subdirectory pattern or glob (or space-delimited subdirectory patterns) that the analysis should be limited to. For example: "src" or "src packages". | `false` |                 |
-| `architecture`                  | The CPU architecture to use for the analyzer. Supported values are `x86_64` and `aarch64`.                                                              | No      | `x86_64`        |
 | `diff_aware`                    | Enable [diff-aware scanning mode][5].                                                                                                                   | No      | `true`          |
 | `secrets_enabled`               | Enable secrets detection (Limited Availability)                                                                                                         | No      | `false`         |
 | `static_analysis_enabled`       | Enable static analysis                                                                                                                                  | No      | `true`          |
